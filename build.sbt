@@ -1,10 +1,10 @@
-name := "macro-LMS"
+name := "SpiralSTarget"
 
-version := "0.5"
+version := "0.1"
 
-organization := "EPFL"
+organization := "ETH"
 
-scalaVersion := "2.11.6"
+scalaVersion := "2.11.7"
 
 scalaSource in Compile <<= baseDirectory(_ / "src/main")
 
@@ -15,6 +15,14 @@ libraryDependencies <+= (scalaVersion)("org.scala-lang" % "scala-library" % _ % 
 libraryDependencies <+= (scalaVersion)("org.scala-lang" % "scala-compiler" % _ % "compile")
 
 libraryDependencies += "org.scalacheck" %% "scalacheck" % "1.13.2" //% "test" // cross CrossVersion.full"
+
+libraryDependencies += "com.storm-enroute" %% "scalameter-core" % "0.6"
+
+libraryDependencies += "com.github.scala-blitz" %% "scala-blitz" % "1.1"
+
+libraryDependencies += "org.scala-lang.modules" %% "scala-swing" % "1.0.1"
+
+libraryDependencies += "com.storm-enroute" %% "scalameter" % "0.6" % "test"
 
 libraryDependencies ++= Seq(
   "org.scalatest" %% "scalatest" % "2.2.0" //% "test"
