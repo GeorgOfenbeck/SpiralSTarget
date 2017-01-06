@@ -1,5 +1,9 @@
 
 
+import scala.annotation.tailrec
+import scala.util.Random
+
+
 import java.util.concurrent._
 import scala.util.DynamicVariable
 
@@ -69,8 +73,13 @@ object SpiralS2 extends App {
     //true
     val WHT = true
     var sanitycheck: Int = 0
-
-
+/*
+    val standardConfig = config(
+      Key.exec.minWarmupRuns -> 100,
+      Key.exec.maxWarmupRuns -> 1000,
+      Key.exec.benchRuns -> 1000,
+      Key.verbose -> false
+    ) withWarmer (new Warmer.Default)*/
   }
 
 

@@ -14,6 +14,17 @@ libraryDependencies <+= (scalaVersion)("org.scala-lang" % "scala-library" % _ % 
 
 libraryDependencies <+= (scalaVersion)("org.scala-lang" % "scala-compiler" % _ % "compile")
 
+scalacOptions	++= Seq(
+  //"-opt:help",
+  "-opt:l:project",
+  "-opt:nullness-tracking",
+  "-opt:box-unbox",
+  "-opt:copy-propagation",
+  "-opt:compact-locals",
+  //"-opt:simplify-jumps ",
+  "-opt:unreachable-code")
+
+
 
 
 
@@ -25,8 +36,6 @@ parallelExecution in Test := false
 // disable publishing of main docs
 publishArtifact in (Compile, packageDoc) := false
 
-// continuations
-val contVersion = "1.0.2"
 
 autoCompilerPlugins := true
 
