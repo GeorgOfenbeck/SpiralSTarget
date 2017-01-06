@@ -1,3 +1,4 @@
+/*
 package SpiralS2
 
 
@@ -31,6 +32,25 @@ object ParallelTest extends App{
   tasks foreach {_.join}
 
 
+  def parloop(size: Int, numTasks: Int, ini: ComplexVector, out: ComplexVector, body: (Int,ComplexVector) => ComplexVector): ComplexVector = {
+    val r = (0 to size by (size/(Math.min(numTasks, size))))
+    val ranges1 = (r zip r.tail)
+    val last: (Int,Int) = (ranges1.last._1, size)
+    val ranges = ranges1.dropRight(1) :+ last
+    val tasks = ranges.map( { case (from, to) => common.task( (from until to).map( p => body(p, ini)   ))} )
+    tasks foreach {_.join}
+    out
+  }
+
+
+
+
+  (0 until size).foldLeft(input){
+    (acc,ele) => {
+      acc
+    }
+  }
+
   for (i <- (1 until size)) {
     println(i)
     assert(out(i).im == 2.0 && out(i).re == 0.0, "not working")
@@ -46,3 +66,4 @@ object ParallelTest extends App{
 
 
 }
+*/
