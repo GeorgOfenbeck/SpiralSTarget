@@ -2,7 +2,7 @@
 
 import scala.annotation.tailrec
 import scala.util.Random
-
+import org.scalameter._
 
 import java.util.concurrent._
 import scala.util.DynamicVariable
@@ -68,18 +68,22 @@ object SpiralS2 extends App {
   }
 
   object Settings {
-    val decompchoice: Map[List[Int], (Int, Boolean, Boolean)] = Map(List(64, 1, 32, 1, 16, -1, 2) -> (-1, true, true), List(64, 1, 32, 1, 16, 1, 8, 1, 4, 1, 2) -> (-1, true, true), List(64, 1, 32, -1, 2) -> (-1, true, true), List(64, 1, 32, 1, 16, 1, 8, 1, 4) -> (2, false, false), List(64, 1, 32, 1, 16, 1, 8, -1, 2) -> (-1, true, true), List(64, 1, 32, 1, 16) -> (8, false, false), List(64) -> (32, false, false), List(64, -1, 2) -> (-1, true, true), List(64, 1, 32, 1, 16, 1, 8) -> (4, false, false), List(64, 1, 32) -> (16, false, false), List(64, 1, 32, 1, 16, 1, 8, 1, 4, -1, 2) -> (-1, true, true))
-    val validate = false
+    val id2ids: Map[Int, (Int, Int)] = Map(0 -> (-1, -1), 1 -> (0, 0))
+    val ids2id: Map[(Int, Int), Int] = Map((-1, -1) -> 0, (0, 0) -> 1)
+    val id2radix: Map[Int, Int] = Map(0 -> 2, 1 -> 4)
+    val size2id: Map[Int, Int] = Map(4 -> 0, 16 -> 1)
+    val id2size: Map[Int, Int] = Map(0 -> 4, 1 -> 16)
+    val validate = true
     //true
-    val WHT = true
+    val WHT = false
     var sanitycheck: Int = 0
-/*
+
     val standardConfig = config(
-      Key.exec.minWarmupRuns -> 100,
+      Key.exec.minWarmupRuns -> 1000,
       Key.exec.maxWarmupRuns -> 1000,
-      Key.exec.benchRuns -> 1000,
+      Key.exec.benchRuns -> 10000,
       Key.verbose -> false
-    ) withWarmer (new Warmer.Default)*/
+    ) withWarmer (new Warmer.Default)
   }
 
 
@@ -87,7 +91,7 @@ object SpiralS2 extends App {
     var precompbuffer: Vector[Complex] = Vector.empty
     var dprecompbuffer: Vector[Double] = Vector.empty
     var precomp: Array[Complex] = null
-    var dprecomp: Array[Double] = null
+    var dprecomp: Array[Array[Array[Double]]] = null
     var twindex = 0
 
     def store(n: Int, d: Int, k: Int, i: Int): Complex = {
@@ -108,13 +112,70 @@ object SpiralS2 extends App {
       t
     }
 
-    def dload(): Double = {
-      val t = dprecomp(twindex)
-      twindex = twindex + 1;
-      t
+    def dload(n: Int, d: Int, k: Int, i: Int, re: Int): Double = {
+      val nidx = Integer.numberOfTrailingZeros(n)
+      val didx = Integer.numberOfTrailingZeros(d)
+      dprecomp(nidx)(didx)(2 * i + re)
     }
 
-    def parloop(size: Int, numTasks: Int, ini: ComplexVector, out: ComplexVector, body: ((ComplexVector, Int)) => ComplexVector): ComplexVector = {
+    def TMap2preComp(): Array[Array[Array[Double]]] = {
+      TMap.keys.foldLeft(Array.empty[Array[Array[Double]]])((acc, ele) => {
+        val (n, d, k) = ele
+        val nidx = Integer.numberOfTrailingZeros(n)
+        val didx = Integer.numberOfTrailingZeros(d)
+
+        val nsav: Array[Array[Array[Double]]] = if (acc.size < (nidx + 1)) {
+          //make bigger
+          val bigger = new Array[Array[Array[Double]]](nidx + 1)
+          for (j <- 0 until acc.size)
+            bigger(j) = acc(j)
+          bigger
+        } else acc
+
+        val dsav: Array[Array[Double]] = if (nsav(nidx) == null) {
+          nsav(nidx) = new Array[Array[Double]](didx + 1)
+          nsav(nidx)
+        } else {
+          val dold = nsav(nidx)
+          val dnew = if (dold.size < (didx + 1)) {
+            //make bigger
+            val bigger = new Array[Array[Double]](didx + 1)
+            for (j <- 0 until dold.size)
+              bigger(j) = dold(j)
+            bigger
+          } else dold
+          nsav(nidx) = dnew
+          dnew
+        }
+        val cont = TMap((n, d, k)).save.flatMap(e => Array(e.re, e.im))
+        dsav(didx) = cont
+        nsav
+      })
+    }
+
+    def parloop(size: Int, numTasks: Int, ini: Array[Double], out: Array[Double], body: (Int) => Array[Double]): Array[Double] = {
+      val r = (0 to size by (size / (Math.min(numTasks, size))))
+      val ranges1 = (r zip r.tail)
+      val last: (Int, Int) = (ranges1.last._1, size)
+      val ranges = ranges1.dropRight(1) :+ last
+
+      def blub(r: Range): Unit = {
+        r.map(
+          p => {
+            val t = (p)
+            body(t)
+          }
+        )
+      }
+
+      val tasks = ranges.map({ case (from, to) => common.task(blub(from until to)) })
+      tasks foreach {
+        _.join
+      }
+      out
+    }
+
+    def parloopold(size: Int, numTasks: Int, ini: ComplexVector, out: ComplexVector, body: ((ComplexVector, Int)) => ComplexVector): ComplexVector = {
       val r = (0 to size by (size / (Math.min(numTasks, size))))
       val ranges1 = (r zip r.tail)
       val last: (Int, Int) = (ranges1.last._1, size)
@@ -467,9 +528,9 @@ object SpiralS2 extends App {
     }*/
     val r = new Random()
 
-    val iterateover = (6 until 7)
+    val iterateover = (4 until 5)
     val timings = for (twopower <- iterateover) yield {
-      val size = 64
+      val size = 16
 
       var fail = false
       val fftmatrix = for (i <- Vector(r.nextInt(size)) /*0 until size*/ ) yield {
@@ -487,28 +548,16 @@ object SpiralS2 extends App {
         //VARIOUS PRE CALLS HERE
         val resx = pre.apply(input.save, out.save)
         val res = new InterleavedVector(resx) //, 0, instride, 0, instride, Vector.empty)     // VARIOUS PRE CALLS HERE END
+        println("pre comp done")
         Twiddle.precomp = Twiddle.precompbuffer.toArray
-        Twiddle.dprecomp = Twiddle.dprecompbuffer.toArray
+        Twiddle.dprecomp = Twiddle.TMap2preComp()
         val txy = for (j <- 0 until 10) yield {
-          //Settings.standardConfig measure {
-          for (kk <- 0 until 100000) {
-
-
-            val instride = Vector(1, 1)
+          Settings.standardConfig measure {
             Settings.sanitycheck = 0
             Twiddle.twindex = 0
             //VARIOUS CALLS HERE
-            var elapsedTime = System.nanoTime
             val resx = t.apply(input.save, out.save)
             val res = new InterleavedVector(resx) //, 0, instride, 0, instride, Vector.empty)     // VARIOUS CALLS HERE END
-            val endtime =  (System.nanoTime - elapsedTime)
-
-            val nlogn = size * Math.log10(size)/Math.log10(2)
-
-            val gflops = nlogn/endtime
-
-            println(s"gflops $gflops")
-
 
             if (Settings.validate) {
 
@@ -532,9 +581,90 @@ object SpiralS2 extends App {
             }
           }
         }
-        val seqtime = 0.0
-        println(s"time: $seqtime ms")
-        seqtime
+
+        val txy2 = for (j <- 0 until 10) yield {
+          Settings.standardConfig measure {
+            Settings.sanitycheck = 0
+            Twiddle.twindex = 0
+            //VARIOUS CALLS HERE
+            val resx = JTest.apply(input.save, out.save)
+            val res = new InterleavedVector(resx) //, 0, instride, 0, instride, Vector.empty)     // VARIOUS CALLS HERE END
+
+            if (Settings.validate) {
+
+              for (c <- 0 until size) {
+                val c1 = res(c)
+                val c2 = if (Settings.WHT) Twiddle.WHT(size, c, i) else Twiddle.DFT(size, c, i)
+
+                val thres = 1E-3
+                if (Math.abs(c1.re - c2.re) > thres) {
+                  println(c1.re)
+                  println(c2.re)
+                  fail = true
+                }
+                if (Math.abs(c1.im - c2.im) > thres) {
+                  println(c1.im)
+                  println(c2.im)
+                  fail = true
+                }
+                assert(!fail)
+              }
+            }
+          }
+        }
+
+        {
+          val arr = new Array[Double](32)
+          val arr2 = new Array[Double](32)
+          var i = 0
+          while (i < 32) {
+            {
+              arr(i) = i * 3.3
+              arr2(i) = 0.734
+            }
+            {
+              i += 1;
+              i - 1
+            }
+          }
+          val repeats_inner = 10000
+          var min_time = Double.MaxValue
+          var j = 0
+          while (j < 1000) {
+            {
+              var elapsedTime = System.nanoTime
+              var i = 0
+              while (i < repeats_inner) {
+                {
+                  JTest.apply(arr, arr2)
+                }
+                {
+                  i += 1;
+                  i - 1
+                }
+              }
+              elapsedTime = System.nanoTime - elapsedTime
+              elapsedTime = elapsedTime / repeats_inner
+              if (elapsedTime < min_time) min_time = elapsedTime
+            }
+            {
+              j += 1;
+              j - 1
+            }
+          }
+          val flop = 5 * 16.0 * Math.log10(16) / Math.log10(2)
+          def gf(d: Double) = flop/ (d*1000000)
+          val gflops = gf(min_time/1000000)
+          System.out.println(flop + " flops " + min_time + " time " + gflops + "gflops")
+        }
+
+        val scalatime = txy.min
+        val javatime = txy2.min
+
+        val flops = 16 * 5 * Math.log10(16)/Math.log10(2)
+        def gf(d: Double) = flops/ (d*1000000)
+        println(s"${gf(scalatime)}  vs ${gf(javatime)}")
+        scalatime
 
       }
       //println(fftmatrix)
@@ -593,351 +723,320 @@ object SpiralS2 extends App {
   /** ***************************************
     * Emitting Generated Code
     * ******************************************/
-  class testClass extends (((Array[Double], Array[Double])) => ((Array[Double]))) {
-    def apply(helper: ((Array[Double], Array[Double]))): ((Array[Double])) = {
-      val x1: Array[Double] = helper._1
-      val x2: Array[Double] = helper._2
-      val x236 = {
-        for (lc <- 0 until 1) {
-          val helper = (lc, x1, x2)
+  class testClass {
+    def apply(x1: Array[Double], x2: Array[Double]): ((Array[Double])) = {
 
-          val x5: Int = helper._1
-          val x6: Array[Double] = helper._2
-          val x7: Array[Double] = helper._3
-          val x10 = new Array[Double](2 * 64)
-          //buffer creation
-          val x209 = {
-            for (lc <- 0 until 2) {
-              val helper = (lc, x1, x10)
-
-              val x13: Int = helper._1
-              val x14: Array[Double] = helper._2
-              val x15: Array[Double] = helper._3
-              val x18 = new Array[Double](2 * 32)
-              //buffer creation
-              val x175 = {
-                for (lc <- 0 until 2) {
-                  val helper = (lc, x1, x18)
-
-                  val x20: Int = helper._1
-                  val x21: Array[Double] = helper._2
-                  val x22: Array[Double] = helper._3
-                  val x26 = new Array[Double](2 * 16)
-                  //buffer creation
-                  val x141 = {
-                    for (lc <- 0 until 2) {
-                      val helper = (lc, x1, x26)
-
-                      val x28: Int = helper._1
-                      val x29: Array[Double] = helper._2
-                      val x30: Array[Double] = helper._3
-                      val x34 = new Array[Double](2 * 8)
-                      //buffer creation
-                      val x107 = {
-                        for (lc <- 0 until 2) {
-                          val helper = (lc, x1, x34)
-
-                          val x36: Int = helper._1
-                          val x37: Array[Double] = helper._2
-                          val x38: Array[Double] = helper._3
-                          val x42 = new Array[Double](2 * 4)
-                          //buffer creation
-                          val x73 = {
-                            for (lc <- 0 until 2) {
-                              val helper = (lc, x1, x42)
-
-                              val x44: Int = helper._1
-                              val x45: Array[Double] = helper._2
-                              val x46: Array[Double] = helper._3
-                              val x24 = 16 * x20
-                              val x32 = 8 * x28
-                              val x17 = 32 * x13
-                              val x40 = 4 * x36
-                              val x25 = x17 + x24
-                              val x47 = 2 * x44
-                              val x33 = x25 + x32
-                              val x61 = 2 * x47
-                              val x65 = 1 + x47
-                              val x41 = x33 + x40
-                              val x53 = x41 + 1
-                              val x54 = x53 + x47
-                              val x48 = x41 + x47
-                              val x49 = 2 * x48
-                              val x63 = x61 + 1
-                              val x50 = x1(x49)
-                              val x55 = 2 * x54
-                              val x56 = x1(x55)
-                              val x57 = x55 + 1
-                              val x59 = x50 + x56
-                              val x66 = x50 - x56
-                              val x58 = x1(x57)
-                              val x51 = x49 + 1
-                              val x68 = 2 * x65
-                              val x62 = {
-                                x42.update(x61, x59); x42
-                              }
-                              val x52 = x1(x51)
-                              val x70 = x68 + 1
-                              val x60 = x52 + x58
-                              val x67 = x52 - x58
-                              val x64 = {
-                                x62.update(x63, x60); x62
-                              }
-                              val x69 = {
-                                x64.update(x68, x66); x64
-                              }
-                              val x71 = {
-                                x69.update(x70, x67); x69
-                              }
-                              (x71)
-                            };
-                            x42
-                          }
-                          val x74 = x73
-                          val x104 = {
-                            for (lc <- 0 until 2) {
-                              val helper = (lc, x74, x34)
-
-                              val x76: Int = helper._1
-                              val x77: Array[Double] = helper._2
-                              val x78: Array[Double] = helper._3
-                              val x40 = 4 * x36
-                              val x88 = x40 + x76
-                              val x91 = 2 * x88
-                              val x93 = x91 + 1
-                              val x95 = x40 + 2
-                              val x79 = 2 * x76
-                              val x96 = x95 + x76
-                              val x81 = x79 + 1
-                              val x80 = x74(x79)
-                              val x99 = 2 * x96
-                              val x82 = x74(x81)
-                              val x83 = 2 + x76
-                              val x101 = x99 + 1
-                              val x84 = 2 * x83
-                              val x85 = x74(x84)
-                              val x86 = x84 + 1
-                              val x89 = x80 + x85
-                              val x97 = x80 - x85
-                              val x87 = x74(x86)
-                              val x92 = {
-                                x34.update(x91, x89); x34
-                              }
-                              val x90 = x82 + x87
-                              val x98 = x82 - x87
-                              val x94 = {
-                                x92.update(x93, x90); x92
-                              }
-                              val x100 = {
-                                x94.update(x99, x97); x94
-                              }
-                              val x102 = {
-                                x100.update(x101, x98); x100
-                              }
-                              (x102)
-                            };
-                            x34
-                          }
-                          val x105 = x104
-                          (x105)
-                        };
-                        x34
-                      }
-                      val x108 = x107
-                      val x138 = {
-                        for (lc <- 0 until 4) {
-                          val helper = (lc, x108, x26)
-
-                          val x110: Int = helper._1
-                          val x111: Array[Double] = helper._2
-                          val x112: Array[Double] = helper._3
-                          val x32 = 8 * x28
-                          val x117 = 4 + x110
-                          val x129 = x32 + 4
-                          val x118 = 2 * x117
-                          val x120 = x118 + 1
-                          val x121 = x108(x120)
-                          val x113 = 2 * x110
-                          val x115 = x113 + 1
-                          val x116 = x108(x115)
-                          val x132 = x116 - x121
-                          val x124 = x116 + x121
-                          val x130 = x129 + x110
-                          val x133 = 2 * x130
-                          val x135 = x133 + 1
-                          val x114 = x108(x113)
-                          val x119 = x108(x118)
-                          val x122 = x32 + x110
-                          val x123 = x114 + x119
-                          val x131 = x114 - x119
-                          val x125 = 2 * x122
-                          val x126 = {
-                            x26.update(x125, x123); x26
-                          }
-                          val x127 = x125 + 1
-                          val x128 = {
-                            x126.update(x127, x124); x126
-                          }
-                          val x134 = {
-                            x128.update(x133, x131); x128
-                          }
-                          val x136 = {
-                            x134.update(x135, x132); x134
-                          }
-                          (x136)
-                        };
-                        x26
-                      }
-                      val x139 = x138
-                      (x139)
-                    };
-                    x26
-                  }
-                  val x142 = x141
-                  val x172 = {
-                    for (lc <- 0 until 8) {
-                      val helper = (lc, x142, x18)
-
-                      val x144: Int = helper._1
-                      val x145: Array[Double] = helper._2
-                      val x146: Array[Double] = helper._3
-                      val x24 = 16 * x20
-                      val x147 = 2 * x144
-                      val x156 = x24 + x144
-                      val x148 = x142(x147)
-                      val x149 = x147 + 1
-                      val x159 = 2 * x156
-                      val x161 = x159 + 1
-                      val x150 = x142(x149)
-                      val x151 = 8 + x144
-                      val x163 = x24 + 8
-                      val x152 = 2 * x151
-                      val x164 = x163 + x144
-                      val x153 = x142(x152)
-                      val x157 = x148 + x153
-                      val x160 = {
-                        x18.update(x159, x157); x18
-                      }
-                      val x165 = x148 - x153
-                      val x167 = 2 * x164
-                      val x154 = x152 + 1
-                      val x169 = x167 + 1
-                      val x155 = x142(x154)
-                      val x158 = x150 + x155
-                      val x166 = x150 - x155
-                      val x162 = {
-                        x160.update(x161, x158); x160
-                      }
-                      val x168 = {
-                        x162.update(x167, x165); x162
-                      }
-                      val x170 = {
-                        x168.update(x169, x166); x168
-                      }
-                      (x170)
-                    };
-                    x18
-                  }
-                  val x173 = x172
-                  (x173)
-                };
-                x18
-              }
-              val x176 = x175
-              val x206 = {
-                for (lc <- 0 until 16) {
-                  val helper = (lc, x176, x10)
-
-                  val x178: Int = helper._1
-                  val x179: Array[Double] = helper._2
-                  val x180: Array[Double] = helper._3
-                  val x17 = 32 * x13
-                  val x185 = 16 + x178
-                  val x197 = x17 + 16
-                  val x181 = 2 * x178
-                  val x198 = x197 + x178
-                  val x201 = 2 * x198
-                  val x182 = x176(x181)
-                  val x203 = x201 + 1
-                  val x186 = 2 * x185
-                  val x188 = x186 + 1
-                  val x189 = x176(x188)
-                  val x187 = x176(x186)
-                  val x191 = x182 + x187
-                  val x199 = x182 - x187
-                  val x190 = x17 + x178
-                  val x183 = x181 + 1
-                  val x193 = 2 * x190
-                  val x184 = x176(x183)
-                  val x192 = x184 + x189
-                  val x194 = {
-                    x10.update(x193, x191); x10
-                  }
-                  val x195 = x193 + 1
-                  val x200 = x184 - x189
-                  val x196 = {
-                    x194.update(x195, x192); x194
-                  }
-                  val x202 = {
-                    x196.update(x201, x199); x196
-                  }
-                  val x204 = {
-                    x202.update(x203, x200); x202
-                  }
-                  (x204)
-                };
-                x10
-              }
-              val x207 = x206
-              (x207)
-            };
-            x10
-          }
-          val x210 = x209
-          val x233 = {
-            for (lc <- 0 until 32) {
-              val helper = (lc, x210, x2)
-
-              val x212: Int = helper._1
-              val x213: Array[Double] = helper._2
-              val x214: Array[Double] = helper._3
-              val x215 = 2 * x212
-              val x219 = 32 + x212
-              val x216 = x210(x215)
-              val x217 = x215 + 1
-              val x220 = 2 * x219
-              val x218 = x210(x217)
-              val x221 = x210(x220)
-              val x222 = x220 + 1
-              val x224 = x216 + x221
-              val x228 = x216 - x221
-              val x223 = x210(x222)
-              val x226 = {
-                x2.update(x215, x224); x2
-              }
-              val x225 = x218 + x223
-              val x229 = x218 - x223
-              val x227 = {
-                x226.update(x217, x225); x226
-              }
-              val x230 = {
-                x227.update(x220, x228); x227
-              }
-              val x231 = {
-                x230.update(x222, x229); x230
-              }
-              (x231)
-            };
-            x2
-          }
-          val x234 = x233
-          (x234)
-        };
-        x2
+      val x25 = x1(25)
+      val x57 = x1(26)
+      val x121 = x1(31)
+      val x117 = x1(15)
+      val x125 = x117 - x121
+      val x84 = x1(12)
+      val x10 = x1(16)
+      val x110 = x1(23)
+      val x78 = x1(21)
+      val x106 = x1(7)
+      val x73 = x1(4)
+      val x45 = x1(19)
+      val x54 = x1(11)
+      val x115 = x1(14)
+      val x7 = x1(1)
+      val x5 = x1(0)
+      val x13 = x5 + x10
+      val x130 = 0 - x125
+      val x112 = x106 + x110
+      val x123 = x117 + x121
+      val x129 = x112 - x123
+      val x217 = -0.7071067811865476 * x129
+      val x74 = x1(5)
+      val x80 = x74 + x78
+      val x127 = x112 + x123
+      val x12 = x1(17)
+      val x14 = x7 + x12
+      val x16 = x7 - x12
+      val x43 = x1(18)
+      val x88 = x1(28)
+      val x93 = x84 - x88
+      val x91 = x84 + x88
+      val x41 = x1(3)
+      val x49 = x41 - x45
+      val x85 = x1(13)
+      val x114 = x106 - x110
+      val x23 = x1(24)
+      val x18 = x1(8)
+      val x28 = x18 - x23
+      val x38 = x16 - x28
+      val x26 = x18 + x23
+      val x32 = x13 - x26
+      val x76 = x1(20)
+      val x81 = x73 - x76
+      val x119 = x1(30)
+      val x124 = x115 - x119
+      val x132 = x114 + x124
+      val x134 = x114 - x124
+      val x260 = -0.3826834323650898 * x134
+      val x180 = 0.3826834323650898 * x132
+      val x59 = x1(27)
+      val x61 = x54 + x59
+      val x63 = x54 - x59
+      val x82 = x74 - x78
+      val x101 = x82 + x93
+      val x103 = x82 - x93
+      val x244 = -0.7071067811865476 * x103
+      val x162 = 0.7071067811865476 * x101
+      val x36 = x16 + x28
+      val x262 = -0.9238795325112867 * x134
+      val x30 = x13 + x26
+      val x52 = x1(10)
+      val x60 = x52 + x57
+      val x20 = x1(9)
+      val x29 = x20 - x25
+      val x34 = 0 - x29
+      val x27 = x20 + x25
+      val x33 = x14 - x27
+      val x31 = x14 + x27
+      val x108 = x1(22)
+      val x242 = 0.7071067811865476 * x103
+      val x39 = x1(2)
+      val x46 = x39 + x43
+      val x64 = x46 + x60
+      val x66 = x46 - x60
+      val x209 = 0.7071067811865476 * x66
+      val x48 = x39 - x43
+      val x79 = x73 + x76
+      val x97 = x79 - x91
+      val x206 = x33 + x97
+      val x208 = x33 - x97
+      val x95 = x79 + x91
+      val x137 = x30 - x95
+      val x135 = x30 + x95
+      val x47 = x41 + x45
+      val x65 = x47 + x61
+      val x142 = x65 - x127
+      val x140 = x65 + x127
+      val x67 = x47 - x61
+      val x151 = 0 - x142
+      val x152 = x137 + x151
+      val x156 = x137 - x151
+      val x210 = 0.7071067811865476 * x67
+      val x211 = x209 - x210
+      val x212 = x210 + x209
+      val x15 = x5 - x10
+      val x37 = x15 - x34
+      val x35 = x15 + x34
+      val x68 = 0 - x63
+      val x69 = x48 + x68
+      val x71 = x48 - x68
+      val x251 = 0.3826834323650898 * x71
+      val x255 = 0.9238795325112867 * x71
+      val x175 = 0.3826834323650898 * x69
+      val x171 = 0.9238795325112867 * x69
+      val x62 = x52 - x57
+      val x70 = x49 + x62
+      val x174 = 0.9238795325112867 * x70
+      val x176 = x174 + x175
+      val x172 = 0.3826834323650898 * x70
+      val x173 = x171 - x172
+      val x72 = x49 - x62
+      val x252 = 0.9238795325112867 * x72
+      val x253 = x251 - x252
+      val x178 = 0.9238795325112867 * x132
+      val x90 = x1(29)
+      val x92 = x85 + x90
+      val x96 = x80 + x92
+      val x138 = x31 - x96
+      val x98 = x80 - x92
+      val x204 = 0 - x98
+      val x205 = x32 + x204
+      val x207 = x32 - x204
+      val x136 = x31 + x96
+      val x148 = x136 - x140
+      val x144 = x136 + x140
+      val x94 = x85 - x90
+      val x99 = 0 - x94
+      val x102 = x81 - x99
+      val x245 = 0.7071067811865476 * x102
+      val x241 = -0.7071067811865476 * x102
+      val x243 = x241 - x242
+      val x249 = x37 - x243
+      val x247 = x37 + x243
+      val x246 = x244 + x245
+      val x248 = x38 + x246
+      val x250 = x38 - x246
+      val x254 = 0.3826834323650898 * x72
+      val x256 = x254 + x255
+      val x122 = x115 + x119
+      val x215 = 0.7071067811865476 * x129
+      val x100 = x81 + x99
+      val x104 = x1(6)
+      val x161 = 0.7071067811865476 * x100
+      val x164 = x162 + x161
+      val x166 = x36 + x164
+      val x113 = x104 - x108
+      val x133 = x113 - x130
+      val x259 = -0.9238795325112867 * x133
+      val x261 = x259 - x260
+      val x265 = x253 + x261
+      val x269 = x247 + x265
+      val x267 = x253 - x261
+      val x279 = x250 + x267
+      val x263 = -0.3826834323650898 * x133
+      val x264 = x262 + x263
+      val x266 = x256 + x264
+      val x270 = x248 + x266
+      val x274 = x248 - x266
+      val x168 = x36 - x164
+      val x273 = x247 - x265
+      val x268 = x256 - x264
+      val x283 = x250 - x267
+      val x131 = x113 + x130
+      val x181 = 0.9238795325112867 * x131
+      val x177 = 0.3826834323650898 * x131
+      val x179 = x177 - x178
+      val x185 = x173 - x179
+      val x201 = x168 - x185
+      val x197 = x168 + x185
+      val x182 = x180 + x181
+      val x184 = x176 + x182
+      val x192 = x166 - x184
+      val x188 = x166 + x184
+      val x186 = x176 - x182
+      val x183 = x173 + x179
+      val x195 = 0 - x186
+      val x163 = x161 - x162
+      val x165 = x35 + x163
+      val x191 = x165 - x183
+      val x187 = x165 + x183
+      val x167 = x35 - x163
+      val x196 = x167 + x195
+      val x200 = x167 - x195
+      val x277 = 0 - x268
+      val x111 = x104 + x108
+      val x128 = x111 - x122
+      val x278 = x249 + x277
+      val x282 = x249 - x277
+      val x218 = 0.7071067811865476 * x128
+      val x214 = -0.7071067811865476 * x128
+      val x126 = x111 + x122
+      val x216 = x214 - x215
+      val x220 = x211 + x216
+      val x228 = x205 - x220
+      val x224 = x205 + x220
+      val x141 = x64 - x126
+      val x153 = x138 + x141
+      val x157 = x138 - x141
+      val x219 = x217 + x218
+      val x221 = x212 + x219
+      val x229 = x206 - x221
+      val x225 = x206 + x221
+      val x223 = x212 - x219
+      val x139 = x64 + x126
+      val x147 = x135 - x139
+      val x143 = x135 + x139
+      val x222 = x211 - x216
+      val x234 = x208 + x222
+      val x238 = x208 - x222
+      val x145 = {
+        x2.update(0, x143); x2
       }
-      val x237 = x236
+      val x232 = 0 - x223
+      val x146 = {
+        x145.update(1, x144); x145
+      }
+      val x233 = x207 + x232
+      val x237 = x207 - x232
+      val x149 = {
+        x146.update(16, x147); x146
+      }
+      val x150 = {
+        x149.update(17, x148); x149
+      }
+      val x154 = {
+        x150.update(8, x152); x150
+      }
+      val x155 = {
+        x154.update(9, x153); x154
+      }
+      val x158 = {
+        x155.update(24, x156); x155
+      }
+      val x159 = {
+        x158.update(25, x157); x158
+      }
+      val x189 = {
+        x159.update(2, x187); x159
+      }
+      val x190 = {
+        x189.update(3, x188); x189
+      }
+      val x193 = {
+        x190.update(18, x191); x190
+      }
+      val x194 = {
+        x193.update(19, x192); x193
+      }
+      val x198 = {
+        x194.update(10, x196); x194
+      }
+      val x199 = {
+        x198.update(11, x197); x198
+      }
+      val x202 = {
+        x199.update(26, x200); x199
+      }
+      val x203 = {
+        x202.update(27, x201); x202
+      }
+      val x226 = {
+        x203.update(4, x224); x203
+      }
+      val x227 = {
+        x226.update(5, x225); x226
+      }
+      val x230 = {
+        x227.update(20, x228); x227
+      }
+      val x231 = {
+        x230.update(21, x229); x230
+      }
+      val x235 = {
+        x231.update(12, x233); x231
+      }
+      val x236 = {
+        x235.update(13, x234); x235
+      }
+      val x239 = {
+        x236.update(28, x237); x236
+      }
+      val x240 = {
+        x239.update(29, x238); x239
+      }
+      val x271 = {
+        x240.update(6, x269); x240
+      }
+      val x272 = {
+        x271.update(7, x270); x271
+      }
+      val x275 = {
+        x272.update(22, x273); x272
+      }
+      val x276 = {
+        x275.update(23, x274); x275
+      }
+      val x280 = {
+        x276.update(14, x278); x276
+      }
+      val x281 = {
+        x280.update(15, x279); x280
+      }
+      val x284 = {
+        x281.update(30, x282); x281
+      }
+      val x285 = {
+        x284.update(31, x283); x284
+      }
 
-      (x237)
+      (x285)
     }
 
     /** ***************************************
@@ -951,351 +1050,320 @@ object SpiralS2 extends App {
   /** ***************************************
     * Emitting Generated Code
     * ******************************************/
-  class PreCompute extends (((Array[Double], Array[Double])) => ((Array[Double]))) {
-    def apply(helper: ((Array[Double], Array[Double]))): ((Array[Double])) = {
-      val x1: Array[Double] = helper._1
-      val x2: Array[Double] = helper._2
-      val x236 = {
-        for (lc <- 0 until 1) {
-          val helper = (lc, x1, x2)
+  class PreCompute {
+    def apply(x1: Array[Double], x2: Array[Double]): ((Array[Double])) = {
 
-          val x5: Int = helper._1
-          val x6: Array[Double] = helper._2
-          val x7: Array[Double] = helper._3
-          val x10 = new Array[Double](2 * 64)
-          //buffer creation
-          val x209 = {
-            for (lc <- 0 until 2) {
-              val helper = (lc, x1, x10)
-
-              val x13: Int = helper._1
-              val x14: Array[Double] = helper._2
-              val x15: Array[Double] = helper._3
-              val x18 = new Array[Double](2 * 32)
-              //buffer creation
-              val x175 = {
-                for (lc <- 0 until 2) {
-                  val helper = (lc, x1, x18)
-
-                  val x20: Int = helper._1
-                  val x21: Array[Double] = helper._2
-                  val x22: Array[Double] = helper._3
-                  val x26 = new Array[Double](2 * 16)
-                  //buffer creation
-                  val x141 = {
-                    for (lc <- 0 until 2) {
-                      val helper = (lc, x1, x26)
-
-                      val x28: Int = helper._1
-                      val x29: Array[Double] = helper._2
-                      val x30: Array[Double] = helper._3
-                      val x34 = new Array[Double](2 * 8)
-                      //buffer creation
-                      val x107 = {
-                        for (lc <- 0 until 2) {
-                          val helper = (lc, x1, x34)
-
-                          val x36: Int = helper._1
-                          val x37: Array[Double] = helper._2
-                          val x38: Array[Double] = helper._3
-                          val x42 = new Array[Double](2 * 4)
-                          //buffer creation
-                          val x73 = {
-                            for (lc <- 0 until 2) {
-                              val helper = (lc, x1, x42)
-
-                              val x44: Int = helper._1
-                              val x45: Array[Double] = helper._2
-                              val x46: Array[Double] = helper._3
-                              val x24 = 16 * x20
-                              val x32 = 8 * x28
-                              val x17 = 32 * x13
-                              val x40 = 4 * x36
-                              val x25 = x17 + x24
-                              val x47 = 2 * x44
-                              val x33 = x25 + x32
-                              val x61 = 2 * x47
-                              val x65 = 1 + x47
-                              val x41 = x33 + x40
-                              val x53 = x41 + 1
-                              val x54 = x53 + x47
-                              val x48 = x41 + x47
-                              val x49 = 2 * x48
-                              val x63 = x61 + 1
-                              val x50 = x1(x49)
-                              val x55 = 2 * x54
-                              val x56 = x1(x55)
-                              val x57 = x55 + 1
-                              val x59 = x50 + x56
-                              val x66 = x50 - x56
-                              val x58 = x1(x57)
-                              val x51 = x49 + 1
-                              val x68 = 2 * x65
-                              val x62 = {
-                                x42.update(x61, x59); x42
-                              }
-                              val x52 = x1(x51)
-                              val x70 = x68 + 1
-                              val x60 = x52 + x58
-                              val x67 = x52 - x58
-                              val x64 = {
-                                x62.update(x63, x60); x62
-                              }
-                              val x69 = {
-                                x64.update(x68, x66); x64
-                              }
-                              val x71 = {
-                                x69.update(x70, x67); x69
-                              }
-                              (x71)
-                            };
-                            x42
-                          }
-                          val x74 = x73
-                          val x104 = {
-                            for (lc <- 0 until 2) {
-                              val helper = (lc, x74, x34)
-
-                              val x76: Int = helper._1
-                              val x77: Array[Double] = helper._2
-                              val x78: Array[Double] = helper._3
-                              val x40 = 4 * x36
-                              val x88 = x40 + x76
-                              val x91 = 2 * x88
-                              val x93 = x91 + 1
-                              val x95 = x40 + 2
-                              val x79 = 2 * x76
-                              val x96 = x95 + x76
-                              val x81 = x79 + 1
-                              val x80 = x74(x79)
-                              val x99 = 2 * x96
-                              val x82 = x74(x81)
-                              val x83 = 2 + x76
-                              val x101 = x99 + 1
-                              val x84 = 2 * x83
-                              val x85 = x74(x84)
-                              val x86 = x84 + 1
-                              val x89 = x80 + x85
-                              val x97 = x80 - x85
-                              val x87 = x74(x86)
-                              val x92 = {
-                                x34.update(x91, x89); x34
-                              }
-                              val x90 = x82 + x87
-                              val x98 = x82 - x87
-                              val x94 = {
-                                x92.update(x93, x90); x92
-                              }
-                              val x100 = {
-                                x94.update(x99, x97); x94
-                              }
-                              val x102 = {
-                                x100.update(x101, x98); x100
-                              }
-                              (x102)
-                            };
-                            x34
-                          }
-                          val x105 = x104
-                          (x105)
-                        };
-                        x34
-                      }
-                      val x108 = x107
-                      val x138 = {
-                        for (lc <- 0 until 4) {
-                          val helper = (lc, x108, x26)
-
-                          val x110: Int = helper._1
-                          val x111: Array[Double] = helper._2
-                          val x112: Array[Double] = helper._3
-                          val x32 = 8 * x28
-                          val x117 = 4 + x110
-                          val x129 = x32 + 4
-                          val x118 = 2 * x117
-                          val x120 = x118 + 1
-                          val x121 = x108(x120)
-                          val x113 = 2 * x110
-                          val x115 = x113 + 1
-                          val x116 = x108(x115)
-                          val x132 = x116 - x121
-                          val x124 = x116 + x121
-                          val x130 = x129 + x110
-                          val x133 = 2 * x130
-                          val x135 = x133 + 1
-                          val x114 = x108(x113)
-                          val x119 = x108(x118)
-                          val x122 = x32 + x110
-                          val x123 = x114 + x119
-                          val x131 = x114 - x119
-                          val x125 = 2 * x122
-                          val x126 = {
-                            x26.update(x125, x123); x26
-                          }
-                          val x127 = x125 + 1
-                          val x128 = {
-                            x126.update(x127, x124); x126
-                          }
-                          val x134 = {
-                            x128.update(x133, x131); x128
-                          }
-                          val x136 = {
-                            x134.update(x135, x132); x134
-                          }
-                          (x136)
-                        };
-                        x26
-                      }
-                      val x139 = x138
-                      (x139)
-                    };
-                    x26
-                  }
-                  val x142 = x141
-                  val x172 = {
-                    for (lc <- 0 until 8) {
-                      val helper = (lc, x142, x18)
-
-                      val x144: Int = helper._1
-                      val x145: Array[Double] = helper._2
-                      val x146: Array[Double] = helper._3
-                      val x24 = 16 * x20
-                      val x147 = 2 * x144
-                      val x156 = x24 + x144
-                      val x148 = x142(x147)
-                      val x149 = x147 + 1
-                      val x159 = 2 * x156
-                      val x161 = x159 + 1
-                      val x150 = x142(x149)
-                      val x151 = 8 + x144
-                      val x163 = x24 + 8
-                      val x152 = 2 * x151
-                      val x164 = x163 + x144
-                      val x153 = x142(x152)
-                      val x157 = x148 + x153
-                      val x160 = {
-                        x18.update(x159, x157); x18
-                      }
-                      val x165 = x148 - x153
-                      val x167 = 2 * x164
-                      val x154 = x152 + 1
-                      val x169 = x167 + 1
-                      val x155 = x142(x154)
-                      val x158 = x150 + x155
-                      val x166 = x150 - x155
-                      val x162 = {
-                        x160.update(x161, x158); x160
-                      }
-                      val x168 = {
-                        x162.update(x167, x165); x162
-                      }
-                      val x170 = {
-                        x168.update(x169, x166); x168
-                      }
-                      (x170)
-                    };
-                    x18
-                  }
-                  val x173 = x172
-                  (x173)
-                };
-                x18
-              }
-              val x176 = x175
-              val x206 = {
-                for (lc <- 0 until 16) {
-                  val helper = (lc, x176, x10)
-
-                  val x178: Int = helper._1
-                  val x179: Array[Double] = helper._2
-                  val x180: Array[Double] = helper._3
-                  val x17 = 32 * x13
-                  val x185 = 16 + x178
-                  val x197 = x17 + 16
-                  val x181 = 2 * x178
-                  val x198 = x197 + x178
-                  val x201 = 2 * x198
-                  val x182 = x176(x181)
-                  val x203 = x201 + 1
-                  val x186 = 2 * x185
-                  val x188 = x186 + 1
-                  val x189 = x176(x188)
-                  val x187 = x176(x186)
-                  val x191 = x182 + x187
-                  val x199 = x182 - x187
-                  val x190 = x17 + x178
-                  val x183 = x181 + 1
-                  val x193 = 2 * x190
-                  val x184 = x176(x183)
-                  val x192 = x184 + x189
-                  val x194 = {
-                    x10.update(x193, x191); x10
-                  }
-                  val x195 = x193 + 1
-                  val x200 = x184 - x189
-                  val x196 = {
-                    x194.update(x195, x192); x194
-                  }
-                  val x202 = {
-                    x196.update(x201, x199); x196
-                  }
-                  val x204 = {
-                    x202.update(x203, x200); x202
-                  }
-                  (x204)
-                };
-                x10
-              }
-              val x207 = x206
-              (x207)
-            };
-            x10
-          }
-          val x210 = x209
-          val x233 = {
-            for (lc <- 0 until 32) {
-              val helper = (lc, x210, x2)
-
-              val x212: Int = helper._1
-              val x213: Array[Double] = helper._2
-              val x214: Array[Double] = helper._3
-              val x215 = 2 * x212
-              val x219 = 32 + x212
-              val x216 = x210(x215)
-              val x217 = x215 + 1
-              val x220 = 2 * x219
-              val x218 = x210(x217)
-              val x221 = x210(x220)
-              val x222 = x220 + 1
-              val x224 = x216 + x221
-              val x228 = x216 - x221
-              val x223 = x210(x222)
-              val x226 = {
-                x2.update(x215, x224); x2
-              }
-              val x225 = x218 + x223
-              val x229 = x218 - x223
-              val x227 = {
-                x226.update(x217, x225); x226
-              }
-              val x230 = {
-                x227.update(x220, x228); x227
-              }
-              val x231 = {
-                x230.update(x222, x229); x230
-              }
-              (x231)
-            };
-            x2
-          }
-          val x234 = x233
-          (x234)
-        };
-        x2
+      val x25 = x1(25)
+      val x57 = x1(26)
+      val x121 = x1(31)
+      val x117 = x1(15)
+      val x125 = x117 - x121
+      val x84 = x1(12)
+      val x10 = x1(16)
+      val x110 = x1(23)
+      val x78 = x1(21)
+      val x106 = x1(7)
+      val x73 = x1(4)
+      val x45 = x1(19)
+      val x54 = x1(11)
+      val x115 = x1(14)
+      val x7 = x1(1)
+      val x5 = x1(0)
+      val x13 = x5 + x10
+      val x130 = 0 - x125
+      val x112 = x106 + x110
+      val x123 = x117 + x121
+      val x129 = x112 - x123
+      val x217 = -0.7071067811865476 * x129
+      val x74 = x1(5)
+      val x80 = x74 + x78
+      val x127 = x112 + x123
+      val x12 = x1(17)
+      val x14 = x7 + x12
+      val x16 = x7 - x12
+      val x43 = x1(18)
+      val x88 = x1(28)
+      val x93 = x84 - x88
+      val x91 = x84 + x88
+      val x41 = x1(3)
+      val x49 = x41 - x45
+      val x85 = x1(13)
+      val x114 = x106 - x110
+      val x23 = x1(24)
+      val x18 = x1(8)
+      val x28 = x18 - x23
+      val x38 = x16 - x28
+      val x26 = x18 + x23
+      val x32 = x13 - x26
+      val x76 = x1(20)
+      val x81 = x73 - x76
+      val x119 = x1(30)
+      val x124 = x115 - x119
+      val x132 = x114 + x124
+      val x134 = x114 - x124
+      val x260 = -0.3826834323650898 * x134
+      val x180 = 0.3826834323650898 * x132
+      val x59 = x1(27)
+      val x61 = x54 + x59
+      val x63 = x54 - x59
+      val x82 = x74 - x78
+      val x101 = x82 + x93
+      val x103 = x82 - x93
+      val x244 = -0.7071067811865476 * x103
+      val x162 = 0.7071067811865476 * x101
+      val x36 = x16 + x28
+      val x262 = -0.9238795325112867 * x134
+      val x30 = x13 + x26
+      val x52 = x1(10)
+      val x60 = x52 + x57
+      val x20 = x1(9)
+      val x29 = x20 - x25
+      val x34 = 0 - x29
+      val x27 = x20 + x25
+      val x33 = x14 - x27
+      val x31 = x14 + x27
+      val x108 = x1(22)
+      val x242 = 0.7071067811865476 * x103
+      val x39 = x1(2)
+      val x46 = x39 + x43
+      val x64 = x46 + x60
+      val x66 = x46 - x60
+      val x209 = 0.7071067811865476 * x66
+      val x48 = x39 - x43
+      val x79 = x73 + x76
+      val x97 = x79 - x91
+      val x206 = x33 + x97
+      val x208 = x33 - x97
+      val x95 = x79 + x91
+      val x137 = x30 - x95
+      val x135 = x30 + x95
+      val x47 = x41 + x45
+      val x65 = x47 + x61
+      val x142 = x65 - x127
+      val x140 = x65 + x127
+      val x67 = x47 - x61
+      val x151 = 0 - x142
+      val x152 = x137 + x151
+      val x156 = x137 - x151
+      val x210 = 0.7071067811865476 * x67
+      val x211 = x209 - x210
+      val x212 = x210 + x209
+      val x15 = x5 - x10
+      val x37 = x15 - x34
+      val x35 = x15 + x34
+      val x68 = 0 - x63
+      val x69 = x48 + x68
+      val x71 = x48 - x68
+      val x251 = 0.3826834323650898 * x71
+      val x255 = 0.9238795325112867 * x71
+      val x175 = 0.3826834323650898 * x69
+      val x171 = 0.9238795325112867 * x69
+      val x62 = x52 - x57
+      val x70 = x49 + x62
+      val x174 = 0.9238795325112867 * x70
+      val x176 = x174 + x175
+      val x172 = 0.3826834323650898 * x70
+      val x173 = x171 - x172
+      val x72 = x49 - x62
+      val x252 = 0.9238795325112867 * x72
+      val x253 = x251 - x252
+      val x178 = 0.9238795325112867 * x132
+      val x90 = x1(29)
+      val x92 = x85 + x90
+      val x96 = x80 + x92
+      val x138 = x31 - x96
+      val x98 = x80 - x92
+      val x204 = 0 - x98
+      val x205 = x32 + x204
+      val x207 = x32 - x204
+      val x136 = x31 + x96
+      val x148 = x136 - x140
+      val x144 = x136 + x140
+      val x94 = x85 - x90
+      val x99 = 0 - x94
+      val x102 = x81 - x99
+      val x245 = 0.7071067811865476 * x102
+      val x241 = -0.7071067811865476 * x102
+      val x243 = x241 - x242
+      val x249 = x37 - x243
+      val x247 = x37 + x243
+      val x246 = x244 + x245
+      val x248 = x38 + x246
+      val x250 = x38 - x246
+      val x254 = 0.3826834323650898 * x72
+      val x256 = x254 + x255
+      val x122 = x115 + x119
+      val x215 = 0.7071067811865476 * x129
+      val x100 = x81 + x99
+      val x104 = x1(6)
+      val x161 = 0.7071067811865476 * x100
+      val x164 = x162 + x161
+      val x166 = x36 + x164
+      val x113 = x104 - x108
+      val x133 = x113 - x130
+      val x259 = -0.9238795325112867 * x133
+      val x261 = x259 - x260
+      val x265 = x253 + x261
+      val x269 = x247 + x265
+      val x267 = x253 - x261
+      val x279 = x250 + x267
+      val x263 = -0.3826834323650898 * x133
+      val x264 = x262 + x263
+      val x266 = x256 + x264
+      val x270 = x248 + x266
+      val x274 = x248 - x266
+      val x168 = x36 - x164
+      val x273 = x247 - x265
+      val x268 = x256 - x264
+      val x283 = x250 - x267
+      val x131 = x113 + x130
+      val x181 = 0.9238795325112867 * x131
+      val x177 = 0.3826834323650898 * x131
+      val x179 = x177 - x178
+      val x185 = x173 - x179
+      val x201 = x168 - x185
+      val x197 = x168 + x185
+      val x182 = x180 + x181
+      val x184 = x176 + x182
+      val x192 = x166 - x184
+      val x188 = x166 + x184
+      val x186 = x176 - x182
+      val x183 = x173 + x179
+      val x195 = 0 - x186
+      val x163 = x161 - x162
+      val x165 = x35 + x163
+      val x191 = x165 - x183
+      val x187 = x165 + x183
+      val x167 = x35 - x163
+      val x196 = x167 + x195
+      val x200 = x167 - x195
+      val x277 = 0 - x268
+      val x111 = x104 + x108
+      val x128 = x111 - x122
+      val x278 = x249 + x277
+      val x282 = x249 - x277
+      val x218 = 0.7071067811865476 * x128
+      val x214 = -0.7071067811865476 * x128
+      val x126 = x111 + x122
+      val x216 = x214 - x215
+      val x220 = x211 + x216
+      val x228 = x205 - x220
+      val x224 = x205 + x220
+      val x141 = x64 - x126
+      val x153 = x138 + x141
+      val x157 = x138 - x141
+      val x219 = x217 + x218
+      val x221 = x212 + x219
+      val x229 = x206 - x221
+      val x225 = x206 + x221
+      val x223 = x212 - x219
+      val x139 = x64 + x126
+      val x147 = x135 - x139
+      val x143 = x135 + x139
+      val x222 = x211 - x216
+      val x234 = x208 + x222
+      val x238 = x208 - x222
+      val x145 = {
+        x2.update(0, x143); x2
       }
-      val x237 = x236
+      val x232 = 0 - x223
+      val x146 = {
+        x145.update(1, x144); x145
+      }
+      val x233 = x207 + x232
+      val x237 = x207 - x232
+      val x149 = {
+        x146.update(16, x147); x146
+      }
+      val x150 = {
+        x149.update(17, x148); x149
+      }
+      val x154 = {
+        x150.update(8, x152); x150
+      }
+      val x155 = {
+        x154.update(9, x153); x154
+      }
+      val x158 = {
+        x155.update(24, x156); x155
+      }
+      val x159 = {
+        x158.update(25, x157); x158
+      }
+      val x189 = {
+        x159.update(2, x187); x159
+      }
+      val x190 = {
+        x189.update(3, x188); x189
+      }
+      val x193 = {
+        x190.update(18, x191); x190
+      }
+      val x194 = {
+        x193.update(19, x192); x193
+      }
+      val x198 = {
+        x194.update(10, x196); x194
+      }
+      val x199 = {
+        x198.update(11, x197); x198
+      }
+      val x202 = {
+        x199.update(26, x200); x199
+      }
+      val x203 = {
+        x202.update(27, x201); x202
+      }
+      val x226 = {
+        x203.update(4, x224); x203
+      }
+      val x227 = {
+        x226.update(5, x225); x226
+      }
+      val x230 = {
+        x227.update(20, x228); x227
+      }
+      val x231 = {
+        x230.update(21, x229); x230
+      }
+      val x235 = {
+        x231.update(12, x233); x231
+      }
+      val x236 = {
+        x235.update(13, x234); x235
+      }
+      val x239 = {
+        x236.update(28, x237); x236
+      }
+      val x240 = {
+        x239.update(29, x238); x239
+      }
+      val x271 = {
+        x240.update(6, x269); x240
+      }
+      val x272 = {
+        x271.update(7, x270); x271
+      }
+      val x275 = {
+        x272.update(22, x273); x272
+      }
+      val x276 = {
+        x275.update(23, x274); x275
+      }
+      val x280 = {
+        x276.update(14, x278); x276
+      }
+      val x281 = {
+        x280.update(15, x279); x280
+      }
+      val x284 = {
+        x281.update(30, x282); x281
+      }
+      val x285 = {
+        x284.update(31, x283); x284
+      }
 
-      (x237)
+      (x285)
     }
 
     /** ***************************************
